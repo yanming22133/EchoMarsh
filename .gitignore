@@ -1,0 +1,27 @@
+# 数据（已有版权，不上传）
+5.8号/
+data/
+
+# 模型权重
+models/checkpoints/
+*.pth
+*.pkl
+*.npy
+
+# Python 缓存
+__pycache__/
+*.pyc
+*.pyo
+.env
+
+# 系统
+.claude/
+.vscode/
+.idea/
+*.db
+*.sqlite3
+
+# 日志/报告
+logs/
+output/
+*.log
