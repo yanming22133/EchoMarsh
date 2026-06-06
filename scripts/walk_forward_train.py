@@ -46,7 +46,7 @@ def run_walk_forward_validation():
 
     model, device = ModelFactory.create_model(
         model_type='transformer',
-        ts_feature_dim=22,
+        ts_feature_dim=32,
         meta_feature_dim=7,
     )
     total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)

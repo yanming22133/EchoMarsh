@@ -31,23 +31,29 @@ class FundamentalFetcher:
         return False
 
     def get_lhb_seat_quality(self, symbol, date_str):
-        """
-        龙虎榜“拉萨天团”权重（Seat Quality Analysis）
-        买入前五中，包含“拉萨”的席位越多，质量分越低。
+        “””
+        龙虎榜”拉萨天团”权重（Seat Quality Analysis）
+        买入前五中，包含”拉萨”的席位越多，质量分越低。
         返回 [-1.0, 1.0] 的分数。-1 代表全是大本营散户，1 代表全是顶级游资。
-        """
+        “””
         code = str(symbol).zfill(6)
         try:
-            # 简化演示：实际可通过 ak.stock_lhb_detail_em 获取
-            # 模拟：随机返回一个偏中性的质量分，若遇到拉萨直接降级
-            lhasa_count = np.random.choice([0, 1, 2], p=[0.8, 0.15, 0.05])
-            
+            lhb_df = ak.stock_lhb_detail_em(date=date_str)
+            if lhb_df is None or lhb_df.empty:
+                return 0.0  # 当日无龙虎榜数据，返回中性
+            stock_lhb = lhb_df[lhb_df['代码'] == code]
+            if stock_lhb.empty:
+                return 0.0
+            buy_seats = stock_lhb[stock_lhb['类型'].str.contains('买入', na=False)]
+            if buy_seats.empty:
+                return 0.0
+            lhasa_count = buy_seats['营业部名称'].str.contains('拉萨', na=False).sum()
             if lhasa_count > 0:
-                print(f"[龙虎榜] {code} 买入前五惊现 {lhasa_count} 家拉萨席位，降低预期评分。")
-                return -0.5 * lhasa_count
-            return 0.5 # 默认假设有普通游资合力
+                print(f”[龙虎榜] {code} 买入前五出现 {lhasa_count} 家拉萨席位，降低预期评分。”)
+                return -0.5 * min(lhasa_count, 2)
+            return 0.5
         except Exception:
-            return 0.0
+            return 0.0  # 获取失败返回中性，不产生误导信号
 
     def get_stock_info(self, symbol):
         """

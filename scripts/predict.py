@@ -19,7 +19,7 @@ SEQ_LEN, PRED_LEN = 120, 5
 INCLUDE_CODES = ('60', '00')
 
 # 加载模型
-model, device = ModelFactory.create_model('transformer', ts_feature_dim=36, meta_feature_dim=7)
+model, device = ModelFactory.create_model('transformer', ts_feature_dim=32, meta_feature_dim=7)
 model.load_state_dict(torch.load(os.path.join(CKPT_DIR, "best_echomarsh_model.pth"),
                                  map_location=device, weights_only=True))
 model.eval()

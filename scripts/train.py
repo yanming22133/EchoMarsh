@@ -76,7 +76,7 @@ def main():
     # 初始化模型
     model, device = ModelFactory.create_model(
         model_type='transformer',
-        ts_feature_dim=36,
+        ts_feature_dim=32,
         meta_feature_dim=7,
     )
 

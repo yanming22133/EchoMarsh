@@ -369,47 +369,38 @@ class OfflineStockDataset(Dataset):
                     indices = np.linspace(0, len(feat_raw) - 1, n_sample, dtype=int)
                     all_feature_buffer.append(feat_raw[indices])
 
-                # === Meta 特征提取 (取最新时间点的数据) ===
+                # === Meta 特征矩阵 (每行独立计算，避免 lookahead bias) ===
+                n_rows = len(df)
+                meta_mat = np.zeros((n_rows, 7), dtype=np.float32)
                 if '总市值（元）' in df.columns:
-                    log_mcap = np.log1p(float(df['总市值（元）'].iloc[-1]))
-                else:
-                    log_mcap = 0.0
+                    meta_mat[:, 0] = np.log1p(df['总市值（元）'].values.astype(np.float64)) * 0.1
                 if '滚动市盈率' in df.columns:
-                    pe = float(df['滚动市盈率'].iloc[-1])
-                    pe = np.clip(pe, 0, 200) / 50.0
-                else:
-                    pe = 0.0
+                    meta_mat[:, 1] = np.clip(df['滚动市盈率'].values.astype(np.float64), 0, 200) / 50.0
                 if '市净率' in df.columns:
-                    pb = float(df['市净率'].iloc[-1])
-                    pb = np.clip(pb, 0, 20) / 5.0
-                else:
-                    pb = 0.0
-                turnover_vals = df['换手率'].values[-5:] if '换手率' in df.columns else np.zeros(5)
-                turnover_ma5 = float(np.nanmean(turnover_vals)) / 10.0
+                    meta_mat[:, 2] = np.clip(df['市净率'].values.astype(np.float64), 0, 20) / 5.0
+                if '换手率' in df.columns:
+                    meta_mat[:, 3] = pd.Series(df['换手率'].values).rolling(5, min_periods=1).mean().to_numpy() / 10.0
                 if '流通市值（元）' in df.columns and '总市值（元）' in df.columns:
-                    circ_ratio = float(df['流通市值（元）'].iloc[-1]) / (float(df['总市值（元）'].iloc[-1]) + eps)
+                    meta_mat[:, 4] = df['流通市值（元）'].values.astype(np.float64) / (df['总市值（元）'].values.astype(np.float64) + eps)
                 else:
-                    circ_ratio = 0.5
-                ret_5d = float(df['涨幅%'].values[-5:].sum()) / 20.0
-                limit_up = float(df['是否涨停'].iloc[-1] == '是') if '是否涨停' in df.columns else 0.0
+                    meta_mat[:, 4] = 0.5
+                if '涨幅%' in df.columns:
+                    meta_mat[:, 5] = pd.Series(df['涨幅%'].values).rolling(5, min_periods=1).sum().to_numpy() / 20.0
+                if '是否涨停' in df.columns:
+                    meta_mat[:, 6] = (df['是否涨停'] == '是').astype(float).values
+                # 与 feat_raw / targets 使用相同的 valid 掩码，确保行对齐
+                meta_mat = meta_mat[valid]
 
-                meta_arr = np.array([
-                    log_mcap * 0.1,
-                    pe,
-                    pb,
-                    turnover_ma5,
-                    circ_ratio,
-                    ret_5d,
-                    limit_up,
-                ], dtype=np.float32)
-
-                # === 滑动窗口生成样本 (目标5维: 1d, 3d, 5d, 5d_max, limit) ===
+                # === 滑动窗口生成样本 (meta 取窗口最后一行，即此时可观测的最新数据) ===
                 for i in range(len(feat_raw) - self.seq_len + 1):
                     x = feat_raw[i:i + self.seq_len]
                     y = targets[i + self.seq_len - 1]
+                    m = meta_mat[i + self.seq_len - 1]
                     if np.isnan(x).any() or np.isinf(x).any() or np.isnan(y).any() or np.isinf(y).any():
                         continue
-                    self.samples.append((x, meta_arr.copy(), y))
+                    if np.isnan(m).any():
+                        m = np.nan_to_num(m, nan=0.0)
+                    self.samples.append((x, m.copy(), y))
 
             except Exception as e:
                 print(f"处理文件 {file} 出错: {e}")
@@ -593,27 +584,38 @@ class OfflineStockDatasetFromFiles(Dataset):
                 feat_raw = feat_raw[valid]
                 targets = label_arr[valid]
 
-                # Meta
-                log_mcap = np.log1p(float(df['总市值（元）'].iloc[-1])) if '总市值（元）' in df.columns else 0.0
-                pe = np.clip(float(df['滚动市盈率'].iloc[-1]), 0, 200) / 50.0 if '滚动市盈率' in df.columns else 0.0
-                pb = np.clip(float(df['市净率'].iloc[-1]), 0, 20) / 5.0 if '市净率' in df.columns else 0.0
-                turnover_ma5 = float(np.nanmean(df['换手率'].values[-5:])) / 10.0 if '换手率' in df.columns else 0.0
+                # Meta — 每行独立计算，避免 lookahead bias
+                n_rows = len(df)
+                meta_mat = np.zeros((n_rows, 7), dtype=np.float32)
+                if '总市值（元）' in df.columns:
+                    meta_mat[:, 0] = np.log1p(df['总市值（元）'].values.astype(np.float64)) * 0.1
+                if '滚动市盈率' in df.columns:
+                    meta_mat[:, 1] = np.clip(df['滚动市盈率'].values.astype(np.float64), 0, 200) / 50.0
+                if '市净率' in df.columns:
+                    meta_mat[:, 2] = np.clip(df['市净率'].values.astype(np.float64), 0, 20) / 5.0
+                if '换手率' in df.columns:
+                    meta_mat[:, 3] = pd.Series(df['换手率'].values).rolling(5, min_periods=1).mean().to_numpy() / 10.0
                 if '流通市值（元）' in df.columns and '总市值（元）' in df.columns:
-                    circ_ratio = float(df['流通市值（元）'].iloc[-1]) / (float(df['总市值（元）'].iloc[-1]) + eps)
+                    meta_mat[:, 4] = df['流通市值（元）'].values.astype(np.float64) / (df['总市值（元）'].values.astype(np.float64) + eps)
                 else:
-                    circ_ratio = 0.5
-                ret_5d = float(df['涨幅%'].values[-5:].sum()) / 20.0 if '涨幅%' in df.columns else 0.0
-                limit_up = float(df['是否涨停'].iloc[-1] == '是') if '是否涨停' in df.columns else 0.0
-                meta_arr = np.array([log_mcap * 0.1, pe, pb, turnover_ma5, circ_ratio, ret_5d, limit_up], dtype=np.float32)
+                    meta_mat[:, 4] = 0.5
+                if '涨幅%' in df.columns:
+                    meta_mat[:, 5] = pd.Series(df['涨幅%'].values).rolling(5, min_periods=1).sum().to_numpy() / 20.0
+                if '是否涨停' in df.columns:
+                    meta_mat[:, 6] = (df['是否涨停'] == '是').astype(float).values
+                meta_mat = meta_mat[valid]
 
                 for i in range(len(feat_raw) - self.seq_len + 1):
                     x = feat_raw[i:i + self.seq_len]
                     y = targets[i + self.seq_len - 1]
+                    m = meta_mat[i + self.seq_len - 1]
                     if np.isnan(x).any() or np.isinf(x).any() or np.isnan(y).any() or np.isinf(y).any():
                         continue
+                    if np.isnan(m).any():
+                        m = np.nan_to_num(m, nan=0.0)
                     x_norm = x.copy()
                     x_norm[:, norm_indices] = self.scaler.transform(x_norm[:, norm_indices])
-                    self.samples.append((x_norm.astype(np.float16), meta_arr.copy(), y))
+                    self.samples.append((x_norm.astype(np.float16), m.copy(), y))
             except Exception:
                 continue
 

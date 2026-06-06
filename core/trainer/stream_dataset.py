@@ -282,35 +282,48 @@ def process_csv(file_path, seq_len, pred_len, start_date, end_date, index_df=Non
     if len(feat_raw) < seq_len:
         return None
 
-    log_mcap = np.log1p(float(df['总市值（元）'].iloc[-1])) if '总市值（元）' in df.columns else 0.0
-    pe = np.clip(float(df['滚动市盈率'].iloc[-1]), 0, 200) / 50.0 if '滚动市盈率' in df.columns else 0.0
-    pb = np.clip(float(df['市净率'].iloc[-1]), 0, 20) / 5.0 if '市净率' in df.columns else 0.0
-    turnover_ma5 = float(np.nanmean(df['换手率'].values[-5:])) / 10.0 if '换手率' in df.columns else 0.0
+    # === Meta 特征矩阵 (每行独立计算，避免 lookahead bias) ===
+    n_rows = len(df)
+    meta_mat = np.zeros((n_rows, 7), dtype=np.float32)
+    if '总市值（元）' in df.columns:
+        meta_mat[:, 0] = np.log1p(df['总市值（元）'].values.astype(np.float64)) * 0.1
+    if '滚动市盈率' in df.columns:
+        meta_mat[:, 1] = np.clip(df['滚动市盈率'].values.astype(np.float64), 0, 200) / 50.0
+    if '市净率' in df.columns:
+        meta_mat[:, 2] = np.clip(df['市净率'].values.astype(np.float64), 0, 20) / 5.0
+    if '换手率' in df.columns:
+        meta_mat[:, 3] = pd.Series(df['换手率'].values).rolling(5, min_periods=1).mean().to_numpy() / 10.0
     if '流通市值（元）' in df.columns and '总市值（元）' in df.columns:
-        circ_ratio = float(df['流通市值（元）'].iloc[-1]) / (float(df['总市值（元）'].iloc[-1]) + eps)
+        meta_mat[:, 4] = df['流通市值（元）'].values.astype(np.float64) / (df['总市值（元）'].values.astype(np.float64) + eps)
     else:
-        circ_ratio = 0.5
-    ret_5d = float(df['涨幅%'].values[-5:].sum()) / 20.0
-    limit_up = float(df['是否涨停'].iloc[-1] == '是') if '是否涨停' in df.columns else 0.0
-    meta = np.array([log_mcap * 0.1, pe, pb, turnover_ma5, circ_ratio, ret_5d, limit_up], dtype=np.float32)
+        meta_mat[:, 4] = 0.5
+    if '涨幅%' in df.columns:
+        meta_mat[:, 5] = pd.Series(df['涨幅%'].values).rolling(5, min_periods=1).sum().to_numpy() / 20.0
+    if '是否涨停' in df.columns:
+        meta_mat[:, 6] = (df['是否涨停'] == '是').astype(float).values
+    # 与 feat_raw / targets 对齐
+    meta_mat = meta_mat[valid]
 
-    return feat_raw, targets, meta
+    return feat_raw, targets, meta_mat
 
 
-def build_samples(feat_raw, targets, meta, seq_len, scaler=None, norm_indices=None):
-    """从特征矩阵中滑窗生成样本"""
+def build_samples(feat_raw, targets, meta_matrix, seq_len, scaler=None, norm_indices=None):
+    """从特征矩阵中滑窗生成样本 (meta 取窗口最后一行，避免 lookahead bias)"""
     samples = []
     for i in range(len(feat_raw) - seq_len + 1):
         x = feat_raw[i:i + seq_len]
         y = targets[i + seq_len - 1]
+        m = meta_matrix[i + seq_len - 1]
         if np.isnan(x).any() or np.isinf(x).any() or np.isnan(y) or np.isinf(y):
             continue
+        if np.isnan(m).any():
+            m = np.nan_to_num(m, nan=0.0)
         if scaler is not None and norm_indices is not None:
             x_norm = x.copy()
             x_norm[:, norm_indices] = scaler.transform(x_norm[:, norm_indices])
-            samples.append((x_norm.astype(np.float16), meta, y))
+            samples.append((x_norm.astype(np.float16), m, y))
         else:
-            samples.append((x.astype(np.float32), meta, y))
+            samples.append((x.astype(np.float32), m, y))
     return samples
 
 
@@ -377,11 +390,13 @@ class StreamStockDataset(IterableDataset):
         """从缓存或 CSV 读取一个文件的数据，返回 (feat_raw, targets, meta) 或 None"""
         cache_path = get_cache_path(file_path, self.cache_dir, self.start_date, self.end_date)
 
-        # 读缓存
+        # 读缓存（检查 meta_matrix 字段，旧缓存只有 meta → 重新生成）
         if cache_path and os.path.exists(cache_path):
             try:
                 data = np.load(cache_path)
-                return data['feat_raw'], data['targets'], data['meta']
+                if 'meta_matrix' not in data:
+                    return None  # 旧格式缓存，重新生成
+                return data['feat_raw'], data['targets'], data['meta_matrix']
             except:
                 pass  # 损坏的缓存，重新生成
 
@@ -392,20 +407,20 @@ class StreamStockDataset(IterableDataset):
         if result is None:
             return None
 
-        feat_raw, targets, meta = result
+        feat_raw, targets, meta_matrix = result
 
         # 安全写入缓存（临时文件→重命名，防多 worker 冲突）
         if cache_path:
             tmp = cache_path + ".tmp"
             try:
-                np.savez_compressed(tmp, feat_raw=feat_raw, targets=targets, meta=meta)
+                np.savez_compressed(tmp, feat_raw=feat_raw, targets=targets, meta_matrix=meta_matrix)
                 if os.path.exists(tmp):
                     os.rename(tmp, cache_path)
             except:
                 if os.path.exists(tmp):
                     os.remove(tmp)
 
-        return feat_raw, targets, meta
+        return feat_raw, targets, meta_matrix
 
     def fit_scaler(self, max_samples=500000):
         """遍历全量文件，采样拟合 StandardScaler"""
@@ -449,8 +464,8 @@ class StreamStockDataset(IterableDataset):
             data = self._load_file_data(f)
             if data is None:
                 continue
-            feat_raw, targets, meta = data
-            samples = build_samples(feat_raw, targets, meta, self.seq_len,
+            feat_raw, targets, meta_matrix = data
+            samples = build_samples(feat_raw, targets, meta_matrix, self.seq_len,
                                     self.scaler, self.norm_indices)
             for x, meta_arr, y in samples:
                 yield (

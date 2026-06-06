@@ -74,7 +74,7 @@ print(f"训练集: {len(train_loader)} batch | 验证集: {len(val_loader)} batc
 
 # ========== 第2步: 训练 ==========
 print(f"\n=== 第2步: 训练 ===")
-model, device = ModelFactory.create_model('transformer', ts_feature_dim=22, meta_feature_dim=7)
+model, device = ModelFactory.create_model('transformer', ts_feature_dim=32, meta_feature_dim=7)
 print(f"设备: {device}")
 
 trainer = EchoMarshTrainer(

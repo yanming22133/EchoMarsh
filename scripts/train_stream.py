@@ -43,7 +43,7 @@ def main():
         return
 
     # 初始化模型
-    model, device = ModelFactory.create_model('transformer', ts_feature_dim=36, meta_feature_dim=7)
+    model, device = ModelFactory.create_model('transformer', ts_feature_dim=32, meta_feature_dim=7)
 
     # 训练
     trainer = EchoMarshTrainer(model, device, checkpoint_dir, lr=LR, epochs=EPOCHS, patience=PATIENCE, use_amp=True)

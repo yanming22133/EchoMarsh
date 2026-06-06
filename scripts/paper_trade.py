@@ -37,7 +37,7 @@ SLIPPAGE        = 0.002     # 每次交易的滑点假设 0.2%
 
 
 def load_model(checkpoint_path, device):
-    model, _ = ModelFactory.create_model(model_type='transformer', ts_feature_dim=22)
+    model, _ = ModelFactory.create_model(model_type='transformer', ts_feature_dim=32)
     if os.path.exists(checkpoint_path):
         model.load_state_dict(torch.load(checkpoint_path, map_location=device))
     model.to(device).eval()

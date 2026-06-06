@@ -54,7 +54,7 @@ class FastInferenceEngine:
     3. 批量推理 (一次性处理所有候选股)
     4. 模型编译 (torch.compile 如果 PyTorch 2.0+)
     """
-    def __init__(self, checkpoint_path, device, ts_feature_dim=22):
+    def __init__(self, checkpoint_path, device, ts_feature_dim=32):
         self.device = device
         self.preprocessor = Preprocessor()
         self.feature_cols = [f'{c}_norm' for c in self.preprocessor.feature_cols]

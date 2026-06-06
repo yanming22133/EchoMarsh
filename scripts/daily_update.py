@@ -241,7 +241,15 @@ def run_daily_update(date_str: str = None):
     print("\n[1/5] 外围指数...")
     try:
         gm = GlobalMarketEngine()
-        indices = gm.fetch_global_indices()
+        report = gm.analyze()
+        indices = []
+        for idx in report.us_indices:
+            indices.append({'name': idx.name, 'close': idx.price, 'pct_change': idx.change_pct})
+        if report.a50_future:
+            indices.append({'name': report.a50_future.name, 'close': report.a50_future.price,
+                           'pct_change': report.a50_future.change_pct})
+        for idx in report.hk_indices:
+            indices.append({'name': idx.name, 'close': idx.price, 'pct_change': idx.change_pct})
         for idx in indices:
             print(f"  {idx.get('name','?')}: {idx.get('close',0):.2f} ({idx.get('pct_change',0):+.2f}%)")
     except Exception as e:
@@ -265,7 +273,7 @@ def run_daily_update(date_str: str = None):
             print("\n[3/5] 加载模型...")
             import torch
             from models.backbone.model_factory import ModelFactory
-            model, device = ModelFactory.create_model(model_type='transformer', ts_feature_dim=36, meta_feature_dim=7)
+            model, device = ModelFactory.create_model(model_type='transformer', ts_feature_dim=32, meta_feature_dim=7)
             model.load_state_dict(torch.load(checkpoint_path, map_location=device, weights_only=True))
             model.eval()
             print(f"  模型已加载 ({device})")

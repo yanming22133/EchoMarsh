@@ -67,13 +67,22 @@ if page == "📊 市场看板":
     @st.cache_data(ttl=300)
     def load_market_data():
         try:
-            return global_market.fetch_global_indices()
+            report = global_market.analyze()
+            indices = []
+            for idx in report.us_indices:
+                indices.append({'name': idx.name, 'close': idx.price, 'pct_change': idx.change_pct})
+            if report.a50_future:
+                indices.append({'name': report.a50_future.name, 'close': report.a50_future.price,
+                               'pct_change': report.a50_future.change_pct})
+            for idx in report.hk_indices:
+                indices.append({'name': idx.name, 'close': idx.price, 'pct_change': idx.change_pct})
+            return indices
         except Exception as e:
             st.error(f"获取指数失败: {e}")
             return []
 
     indices = load_market_data()
-    
+
     if indices:
         cols = st.columns(len(indices))
         for i, idx in enumerate(indices):
@@ -97,7 +106,11 @@ if page == "📊 市场看板":
     @st.cache_data(ttl=600)
     def load_news():
         try:
-            return global_market.fetch_cls_telegraph(limit=15)
+            report = global_market.analyze()
+            news_list = []
+            for item in report.news_items[:15]:
+                news_list.append({'time': item.time, 'title': item.title, 'content': item.source})
+            return news_list
         except Exception as e:
             st.error(f"获取新闻失败: {e}")
             return []
@@ -282,7 +295,7 @@ elif page == "💼 持仓与交易管理":
                 profit_pct = (current_price / cost - 1) * 100 if cost > 0 else 0
                 
                 # 顾问建议
-                advice = advisor.advise_position(code, name, cost, current_price, vol)
+                advice = advisor.advise_position(code, name, cost, vol, p.buy_date)
                 
                 color = "up-red" if profit_amount > 0 else "down-green" if profit_amount < 0 else ""
                 

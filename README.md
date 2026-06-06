@@ -103,7 +103,3 @@ python scripts/daily_update.py
 
 - **v0.01**: 初始版本 — 量化选股与训练框架
 - **v0.02**: 新增 Stream 数据集、predict/train_v2/train_stream 脚本
-
-## License
-
-MIT

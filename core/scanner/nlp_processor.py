@@ -18,24 +18,28 @@ class NLPProcessor:
     def analyze_sentiment(self, text_list):
         """
         分析一组文本的情绪，返回综合情绪得分 [-1, 1]。
-        1 代表极度狂热看多，-1 代表极度恐慌看空。
+        使用关键词匹配规则（轻量级）。1 = 极度看多，-1 = 极度看空。
+        TODO: 接入 FinBERT 中文金融情感模型可获得更准确结果。
         """
         if not text_list:
             return 0.0
-            
-        # Mock 实现
-        total_score = 0
+
+        BULL_KW = ['满仓', '打板', '涨停', '利好', '突破', '龙头', '十倍', '起飞', '梭哈', '加仓', '新高', '封板']
+        BEAR_KW = ['跌停', '快跑', '杀猪', '崩盘', '暴跌', '爆仓', '割肉', '利空', '踩雷', '退市', '天地板', '核按钮']
+
+        total_score = 0.0
         for text in text_list:
-            if "满仓" in text or "打板" in text or "十倍" in text:
-                total_score += 0.8
-            elif "跌停" in text or "快跑" in text or "杀猪" in text:
-                total_score -= 0.8
-            else:
-                total_score += np.random.uniform(-0.1, 0.2)
-                
-        # 归一化到 [-1, 1]
+            score = 0.0
+            for kw in BULL_KW:
+                if kw in text:
+                    score += 0.4
+            for kw in BEAR_KW:
+                if kw in text:
+                    score -= 0.4
+            total_score += np.clip(score, -1.0, 1.0)
+
         avg_score = total_score / len(text_list)
-        return max(min(avg_score, 1.0), -1.0)
+        return float(np.clip(avg_score, -1.0, 1.0))
 
     def detect_shill_divergence(self, sentiment_score, main_net_inflow_ratio):
         """
