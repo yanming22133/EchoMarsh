@@ -23,7 +23,7 @@ def main():
     print("=" * 60)
 
     # 数据路径
-    data_dir = "/root/autodl-tmp/前复权"
+    data_dir = os.path.join(project_root, "data", "stocks")
     checkpoint_dir = os.path.join(project_root, "models", "checkpoints")
 
     # 超参数

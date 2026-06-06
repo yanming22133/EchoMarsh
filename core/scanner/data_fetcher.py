@@ -103,7 +103,7 @@ def fetch_stock_data(symbol, start_date_str, output_dir):
 
 def main():
     # 强制规范化路径
-    base_dir = pathlib.Path("F:/EchoMarsh")
+    base_dir = pathlib.Path(__file__).resolve().parent.parent.parent
     raw_data_dir = base_dir / "data" / "raw"
     raw_data_dir.mkdir(parents=True, exist_ok=True)
     

@@ -13,8 +13,8 @@ sys.path.append(project_root)
 from models.backbone.model_factory import ModelFactory
 from core.trainer.stream_dataset import process_csv, build_samples
 
-DATA_DIR = "/root/autodl-tmp/前复权"
-CKPT_DIR = "/root/autodl-tmp/models/checkpoints"
+DATA_DIR = os.path.join(project_root, "data", "stocks")
+CKPT_DIR = os.path.join(project_root, "models", "checkpoints")
 SEQ_LEN, PRED_LEN = 120, 5
 INCLUDE_CODES = ('60', '00')
 

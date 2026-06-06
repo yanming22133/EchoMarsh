@@ -9,8 +9,8 @@ EchoMarsh (鸣泽) 每日市场扫描与预测更新
   5. 输出推荐清单
 
 用法:
-    F:\AnacondaEnvs\pytorch\python.exe scripts/daily_update.py
-    F:\AnacondaEnvs\pytorch\python.exe scripts/daily_update.py --date 20260513
+    python scripts/daily_update.py
+    python scripts/daily_update.py --date 20260513
 """
 
 import os

@@ -25,7 +25,7 @@ def run_walk_forward_validation():
     print("   EchoMarsh 滚动前向验证 (Walk-Forward)")
     print("=" * 60)
 
-    data_dir = r"f:\EchoMarsh\5.8号\每只股票一个文件\前复权\前复权"
+    data_dir = os.path.join(project_root, "data", "stocks")
     checkpoint_dir = os.path.join(project_root, "models", "checkpoints", "walk_forward")
     os.makedirs(checkpoint_dir, exist_ok=True)
 

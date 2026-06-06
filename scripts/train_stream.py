@@ -14,7 +14,7 @@ from core.trainer.trainer import EchoMarshTrainer
 
 
 def main():
-    data_dir = "/root/autodl-tmp/前复权"
+    data_dir = os.path.join(project_root, "data", "stocks")
     checkpoint_dir = os.path.join(project_root, "models", "checkpoints")
 
     SEQ_LEN, PRED_LEN = 120, 5
@@ -35,7 +35,7 @@ def main():
         train_end_date='2024-01-01',
         include_codes=INCLUDE_CODES,
         batch_size=BATCH_SIZE, num_workers=NUM_WORKERS,
-        cache_dir="/root/autodl-tmp/cache",
+        cache_dir=None,  # None = 不缓存，或用 os.path.join(project_root, "cache")
     )
 
     if train_loader is None:

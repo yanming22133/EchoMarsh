@@ -19,8 +19,8 @@ from core.trainer.trainer import EchoMarshTrainer
 from core.trainer.offline_dataset import OfflineStockDataset
 
 # ========== 配置 ==========
-DATA_DIR = "/root/autodl-tmp/前复权"           # AutoDL
-SAVE_DIR = "/root/autodl-tmp/models/checkpoints_v2"
+DATA_DIR = os.path.join(project_root, "data", "stocks")
+SAVE_DIR = os.path.join(project_root, "models", "checkpoints_v2")
 SEQ_LEN, PRED_LEN = 120, 5
 BATCH_SIZE = 256
 EPOCHS = 200
