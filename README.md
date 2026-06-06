@@ -130,4 +130,5 @@ streamlit run scripts/web_app.py
 
 - **v0.01**: 初始版本 — 量化选股与训练框架
 - **v0.02**: 新增 Stream 数据集、predict/train_v2/train_stream 脚本
-- **v0.02b**: 修复 lookahead bias / 维度不一致 / API 崩溃 / 空壳模块，新增因子评估与统一配置
+- **v0.02b**: 修复 lookahead bias / 维度不一致 / API 崩溃 / 空壳模块
+- **v0.03**: 新增 requirements.txt / 统一配置中心 / 因子 IC 评估模块 / logging / 专业 README
