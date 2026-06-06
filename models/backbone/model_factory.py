@@ -11,7 +11,7 @@ class ModelFactory:
         if model_type == 'transformer':
             # CNN-Transformer 重装架构配置
             model = EchoMarshTransformer(
-                ts_feature_dim=kwargs.get('ts_feature_dim', 22),
+                ts_feature_dim=kwargs.get('ts_feature_dim', 36),
                 meta_feature_dim=kwargs.get('meta_feature_dim', 7),
                 d_model=kwargs.get('d_model', 256),
                 nhead=kwargs.get('nhead', 8),

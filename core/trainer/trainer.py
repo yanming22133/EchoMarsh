@@ -3,7 +3,6 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
-from tqdm import tqdm
 
 class FocalLoss(nn.Module):
     """
@@ -22,13 +21,15 @@ class FocalLoss(nn.Module):
 
 class EchoMarshTrainer:
     def __init__(self, model, device, checkpoint_dir="models/checkpoints",
-                 lr=3e-4, epochs=200, patience=10, use_amp=True):
+                 lr=3e-4, epochs=200, patience=10, use_amp=True, warmup_epochs=5):
         self.model = model
         self.device = device
         self.checkpoint_dir = checkpoint_dir
         self.epochs = epochs
         self.patience = patience
         self.use_amp = use_amp and (device.type == 'cuda')
+        self.warmup_epochs = warmup_epochs
+        self.base_lr = lr
 
         os.makedirs(self.checkpoint_dir, exist_ok=True)
 
@@ -42,24 +43,33 @@ class EchoMarshTrainer:
         self.scaler = torch.amp.GradScaler(device='cuda', enabled=self.use_amp)
 
     def _compute_loss(self, outputs, targets):
-        return_preds   = outputs[:, 0]
-        limit_logits   = outputs[:, 1]
-        # FIXED: 阈值从 0.095 改为 9.5，Target_Return 单位是百分比(5.0=5%)
-        true_limit_up  = (targets > 9.5).float()
+        """
+        outputs: [B, 5] = (1d_ret, 3d_ret, 5d_ret, 5d_max_ret, limit_up_logit)
+        targets: [B, 5] = (1d_ret, 3d_ret, 5d_ret, 5d_max_ret, limit_flag)
+        """
+        # 4 个回归头: 用 HuberLoss 分别计算后平均
+        reg_1d = nn.functional.huber_loss(outputs[:, 0], targets[:, 0], delta=0.03)
+        reg_3d = nn.functional.huber_loss(outputs[:, 1], targets[:, 1], delta=0.03)
+        reg_5d = nn.functional.huber_loss(outputs[:, 2], targets[:, 2], delta=0.03)
+        reg_5d_max = nn.functional.huber_loss(outputs[:, 3], targets[:, 3], delta=0.03)
+        reg_loss = (reg_1d + reg_3d + reg_5d + reg_5d_max) / 4.0
 
-        loss_reg = self.reg_loss_fn(return_preds, targets)
-        loss_cls = self.cls_loss_fn(limit_logits, true_limit_up)
-        return 0.35 * loss_reg + 0.65 * loss_cls, loss_reg.item(), loss_cls.item()
+        # 分类头: FocalLoss on limit-up
+        cls_loss = self.cls_loss_fn(outputs[:, 4], targets[:, 4])
+
+        # 加权组合: 回归 0.5 + 分类 0.5
+        total = 0.5 * reg_loss + 0.5 * cls_loss
+        return total, reg_loss.item(), cls_loss.item()
 
     def _run_epoch(self, dataloader, train=True):
         self.model.train() if train else self.model.eval()
         total_loss = total_reg = total_cls = 0.0
+        n_batches = 0
         ctx = torch.enable_grad() if train else torch.no_grad()
-        phase = "Train" if train else "Val"
-        pbar = tqdm(dataloader, desc=f"  {phase}", leave=False, ncols=100)
+        last_report = 0
 
         with ctx:
-            for ts_batch, meta_batch, y_batch in pbar:
+            for ts_batch, meta_batch, y_batch in dataloader:
                 ts_batch   = ts_batch.to(self.device, non_blocking=True)
                 meta_batch = meta_batch.to(self.device, non_blocking=True)
                 y_batch    = y_batch.to(self.device, non_blocking=True)
@@ -67,7 +77,6 @@ class EchoMarshTrainer:
                 if train:
                     self.optimizer.zero_grad()
 
-                # AMP 混合精度前向
                 with torch.amp.autocast(device_type=self.device.type, enabled=self.use_amp):
                     outputs = self.model(ts_batch, meta_batch)
                     loss, l_reg, l_cls = self._compute_loss(outputs, y_batch)
@@ -75,18 +84,27 @@ class EchoMarshTrainer:
                 if train:
                     self.scaler.scale(loss).backward()
                     self.scaler.unscale_(self.optimizer)
-                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=0.5)
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
                     self.scaler.step(self.optimizer)
                     self.scaler.update()
 
                 total_loss += loss.item()
                 total_reg  += l_reg
                 total_cls  += l_cls
-                pbar.set_postfix(loss=f"{loss.item():.4f}", reg=l_reg, cls=l_cls)
+                n_batches += 1
 
-        n = len(dataloader)
-        pbar.close()
-        return total_loss / n, total_reg / n, total_cls / n
+                # 每 2000 批打印一次进度
+                if n_batches - last_report >= 2000:
+                    last_report = n_batches
+                    print(f"  {'Train' if train else 'Val'}: {n_batches} batches, "
+                          f"loss={total_loss/n_batches:.4f}")
+
+        phase = "Train" if train else "Val"
+        avg_loss = total_loss / n_batches if n_batches else 0
+        avg_reg = total_reg / n_batches if n_batches else 0
+        avg_cls = total_cls / n_batches if n_batches else 0
+        print(f"  [{phase}] {n_batches} batches | loss={avg_loss:.6f} reg={avg_reg:.5f} cls={avg_cls:.5f}")
+        return avg_loss, avg_reg, avg_cls
 
     def fit(self, train_loader, val_loader=None):
         self.best_val_loss = float('inf')
@@ -99,7 +117,14 @@ class EchoMarshTrainer:
 
         for epoch in range(1, self.epochs + 1):
             train_loss, l_reg, l_cls = self._run_epoch(train_loader, train=True)
-            self.scheduler.step(epoch)
+
+            # LR Warmup: 前 warmup_epochs 轮线性升温到 base_lr
+            if epoch <= self.warmup_epochs:
+                lr = self.base_lr * epoch / self.warmup_epochs
+                for pg in self.optimizer.param_groups:
+                    pg['lr'] = lr
+            else:
+                self.scheduler.step(epoch)
             lr_now = self.optimizer.param_groups[0]['lr']
 
             val_str = ""
@@ -112,6 +137,12 @@ class EchoMarshTrainer:
 
             print(f"Epoch {epoch:03d} | Train: {train_loss:.6f} "
                   f"(Reg={l_reg:.5f} Cls={l_cls:.5f}){val_str} | LR: {lr_now:.6f}")
+
+            # 每 5 轮定期保存，崩了也不白练
+            if epoch % 5 == 0:
+                ckpt_path = os.path.join(self.checkpoint_dir, f"echomarsh_epoch{epoch}.pth")
+                torch.save(self.model.state_dict(), ckpt_path)
+                print(f"  --> Checkpoint saved: epoch{epoch}")
 
             if monitor_loss < self.best_val_loss:
                 self.best_val_loss = monitor_loss

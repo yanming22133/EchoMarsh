@@ -35,6 +35,43 @@ import akshare as ak
 import pandas as pd
 import numpy as np
 
+# curl_cffi for East Money subdomains that block Python requests TLS fingerprint
+try:
+    from curl_cffi import requests as curl_requests
+    _curl_available = True
+except ImportError:
+    curl_requests = None
+    _curl_available = False
+
+# Patch akshare's request_with_retry to use curl_cffi (fixes 17.push2.eastmoney.com)
+if _curl_available:
+    import akshare.utils.request as _ak_req
+
+    def _patched_request_with_retry(
+        url, params=None, timeout=15, max_retries=3, base_delay=1.0,
+        random_delay_range=(0.5, 1.5),
+    ):
+        last_exception = None
+        for attempt in range(max_retries):
+            try:
+                with curl_requests.Session() as session:
+                    response = session.get(url, params=params, timeout=timeout,
+                                           impersonate="chrome131")
+                    response.raise_for_status()
+                    return response
+            except Exception as e:
+                last_exception = e
+                if attempt < max_retries - 1:
+                    import random
+                    delay = base_delay * (2 ** attempt) + random.uniform(*random_delay_range)
+                    time.sleep(delay)
+        raise last_exception
+
+    _ak_req.request_with_retry = _patched_request_with_retry
+    # func.py imports request_with_retry by reference — patch there too
+    import akshare.utils.func as _ak_func
+    _ak_func.request_with_retry = _patched_request_with_retry
+
 from core.scanner.community_sentiment import CommunitySentimentEngine
 from core.scanner.market_sentiment import MarketSentimentEngine
 
@@ -201,6 +238,34 @@ class DailyScannerEngine:
 
         return candidates
 
+    def _fetch_fund_flow(self, code: str):
+        """使用 curl_cffi 获取个股资金流向 (替代 ak.stock_individual_fund_flow)"""
+        market_id = 1 if code.startswith('6') else 0
+        url = "https://push2his.eastmoney.com/api/qt/stock/fflow/daykline/get"
+        params = {
+            "lmt": "0",
+            "klt": "101",
+            "secid": f"{market_id}.{code}",
+            "fields1": "f1,f2,f3,f7",
+            "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63,f64,f65",
+            "ut": "b2884a393a59ad64002292a3e90d46a5",
+            "_": int(time.time() * 1000),
+        }
+        r = curl_requests.get(url, params=params, impersonate="chrome131", timeout=10)
+        data = r.json().get("data", {})
+        if data is None or "klines" not in data:
+            return None
+        content_list = data["klines"]
+        rows = [item.split(",") for item in content_list]
+        df = pd.DataFrame(rows, columns=[
+            "日期", "主力净流入-净额", "小单净流入-净额", "中单净流入-净额",
+            "大单净流入-净额", "超大单净流入-净额",
+            "主力净流入-净占比", "小单净流入-净占比", "中单净流入-净占比",
+            "大单净流入-净占比", "超大单净流入-净占比",
+            "收盘价", "涨跌幅", "-", "-",
+        ])
+        return df
+
     def _get_sector_ranks(self, date_str):
         """获取行业板块涨幅排名，返回 {行业名: rank}"""
         ranks = {}
@@ -275,8 +340,7 @@ class DailyScannerEngine:
         s_fund = 0.0
         fund_detail = "数据未获取"
         try:
-            market_label = "sh" if code.startswith('6') else "sz"
-            flow_df = ak.stock_individual_fund_flow(stock=code, market=market_label)
+            flow_df = self._fetch_fund_flow(code)
             if flow_df is not None and not flow_df.empty:
                 recent = flow_df.iloc[-1]
                 net_ratio = float(recent.get('主力净流入-净占比', 0))

@@ -14,6 +14,10 @@ __pycache__/
 *.pyo
 .env
 
+# 压缩包/备份
+*.zip
+*.rar
+
 # 系统
 .claude/
 .vscode/

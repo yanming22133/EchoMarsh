@@ -265,7 +265,7 @@ def run_daily_update(date_str: str = None):
             print("\n[3/5] 加载模型...")
             import torch
             from models.backbone.model_factory import ModelFactory
-            model, device = ModelFactory.create_model(model_type='transformer', ts_feature_dim=22, meta_feature_dim=7)
+            model, device = ModelFactory.create_model(model_type='transformer', ts_feature_dim=36, meta_feature_dim=7)
             model.load_state_dict(torch.load(checkpoint_path, map_location=device, weights_only=True))
             model.eval()
             print(f"  模型已加载 ({device})")
@@ -318,7 +318,7 @@ def run_daily_update(date_str: str = None):
                         with torch.amp.autocast(device_type=device.type, enabled=(device.type == 'cuda')):
                             output = model(ts_tensor, meta_tensor)
                         model_ret_pred = float(output[0, 0].cpu())
-                        model_limit_up_prob = float(torch.sigmoid(output[0, 1]).cpu())
+                        model_limit_up_prob = float(torch.sigmoid(output[0, 4]).cpu())
 
             # 综合评分: 因子分(0-100) + 模型分归一化(0-100)
             factor_score = stock.total_score

@@ -26,6 +26,12 @@ os.environ.pop("HTTPS_PROXY", None)
 
 import akshare as ak
 
+# 东方财富部分 POST 端点需要浏览器 TLS 指纹
+try:
+    from curl_cffi import requests as curl_requests
+except ImportError:
+    curl_requests = None
+
 
 class SentimentResult:
     """单只股票的社区情绪评分结果"""
@@ -70,28 +76,53 @@ class CommunitySentimentEngine:
               f"飙升 {len(self._surge_dict)} 只, 评分 {len(self._comment_dict)} 只")
 
     def _load_hot_rank(self):
-        """东财实时热度排行"""
+        """东财实时热度排行 (curl_cffi 绕过 TLS 指纹检测)"""
         try:
-            df = ak.stock_hot_rank_em()
+            df = None
+            if curl_requests:
+                try:
+                    url = "https://emappdata.eastmoney.com/stockrank/getAllCurrentList"
+                    payload = {"appId": "appId01", "globalId": "786e4c21-70dc-435a-93bb-38",
+                               "marketType": "", "pageNo": 1, "pageSize": 100}
+                    r = curl_requests.post(url, json=payload, impersonate="chrome131", timeout=10)
+                    data = r.json().get("data", [])
+                    if data:
+                        df = pd.DataFrame(data)
+                        if 'sc' in df.columns:
+                            df['代码'] = df['sc'].str.extract(r'(\d{6})')
+                except Exception:
+                    pass
+            if df is None:
+                df = ak.stock_hot_rank_em()
             if df is not None and not df.empty:
-                # 列名可能是 '股票代码' 或 '代码'
                 code_col = self._find_column(df, ['股票代码', '代码'])
                 if code_col:
                     for idx, row in df.iterrows():
                         code = str(row[code_col]).zfill(6)
-                        # 排名就是 index+1
                         self._hot_rank_dict[code] = idx + 1
                     print(f"  [热度榜] 成功加载 {len(self._hot_rank_dict)} 只")
-                else:
-                    print(f"  [热度榜] 未找到代码列，可用列: {list(df.columns)}")
         except Exception as e:
             print(f"  [热度榜] 加载失败: {e}")
-            traceback.print_exc()
 
     def _load_surge_rank(self):
-        """东财热度飙升榜"""
+        """东财热度飙升榜 (curl_cffi 绕过 TLS 指纹检测)"""
         try:
-            df = ak.stock_hot_up_em()
+            df = None
+            if curl_requests:
+                try:
+                    url = "https://emappdata.eastmoney.com/stockrank/getAllRiseList"
+                    payload = {"appId": "appId01", "globalId": "786e4c21-70dc-435a-93bb-38",
+                               "marketType": "", "pageNo": 1, "pageSize": 100}
+                    r = curl_requests.post(url, json=payload, impersonate="chrome131", timeout=10)
+                    data = r.json().get("data", [])
+                    if data:
+                        df = pd.DataFrame(data)
+                        if 'sc' in df.columns:
+                            df['代码'] = df['sc'].str.extract(r'(\d{6})')
+                except Exception:
+                    pass
+            if df is None:
+                df = ak.stock_hot_up_em()
             if df is not None and not df.empty:
                 code_col = self._find_column(df, ['股票代码', '代码'])
                 if code_col:
@@ -99,11 +130,8 @@ class CommunitySentimentEngine:
                         code = str(row[code_col]).zfill(6)
                         self._surge_dict[code] = idx + 1
                     print(f"  [飙升榜] 成功加载 {len(self._surge_dict)} 只")
-                else:
-                    print(f"  [飙升榜] 未找到代码列，可用列: {list(df.columns)}")
         except Exception as e:
             print(f"  [飙升榜] 加载失败: {e}")
-            traceback.print_exc()
 
     def _load_comment_scores(self):
         """东财个股综合评分"""

@@ -46,7 +46,7 @@ class ConvBlock(nn.Module):
 class EchoMarshConvTransformer(nn.Module):
     def __init__(
         self,
-        ts_feature_dim=22,
+        ts_feature_dim=36,
         meta_feature_dim=7,
         d_model=256,
         nhead=8,
@@ -113,14 +113,14 @@ class EchoMarshConvTransformer(nn.Module):
             nn.Dropout(dropout),
             nn.Linear(256, 64),
             nn.GELU(),
-            nn.Linear(64, 2)  # 输出: [收益率预测(回归), 涨停概率Logit(分类)]
+            nn.Linear(64, 5)  # 输出: [收益预测(回归) x4, 涨停概率Logit(分类)]
         )
 
     def forward(self, ts_tensor, meta_tensor):
         """
         :param ts_tensor: [Batch, Seq_Len, ts_feature_dim]
         :param meta_tensor: [Batch, meta_feature_dim]
-        :return: [Batch, 2] -> (return_pred, limit_up_logit)
+        :return: [Batch, 5] -> (1d_ret, 3d_ret, 5d_ret, 5d_max_ret, limit_up_logit)
         """
         # --- 塔 1: CNN 局部特征提取 ---
         # Conv1d 需要 [Batch, Channels, Seq_Len]，先转置
@@ -147,7 +147,7 @@ class EchoMarshConvTransformer(nn.Module):
 
 
 if __name__ == "__main__":
-    model = EchoMarshConvTransformer(ts_feature_dim=22, meta_feature_dim=7)
+    model = EchoMarshConvTransformer(ts_feature_dim=32, meta_feature_dim=7)
     total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Model Architecture: CNN (1D) + Transformer (4L, d=256, h=8)")
     print(f"Total Parameters: {total_params:,}")
@@ -159,4 +159,4 @@ if __name__ == "__main__":
     out = model(dummy_ts, dummy_meta)
     print(f"Input TS:   {dummy_ts.shape}")
     print(f"Input Meta: {dummy_meta.shape}")
-    print(f"Output:     {out.shape} (expected [{batch_size}, 2])")
+    print(f"Output:     {out.shape} (expected [{batch_size}, 5])")

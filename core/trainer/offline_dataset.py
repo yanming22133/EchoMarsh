@@ -2,39 +2,48 @@
 EchoMarsh 离线股票数据集加载器 (PyTorch) — 日线版
 ===============================================
 用于读取按"每只股票一个文件"存储的历史日线 CSV 数据。
-添加完整的 TA 特征工程 + 真实元特征，并修复训练阻塞 bug。
+添加完整的 TA 特征工程 + 大盘语境 + 多目标标签。
 """
 
 import os
 import glob
+import warnings
 import numpy as np
 import pandas as pd
 import torch
 from torch.utils.data import Dataset, DataLoader
 from sklearn.preprocessing import StandardScaler
 
+warnings.filterwarnings('ignore')
+try:
+    import akshare as ak
+except:
+    ak = None
+
 # ========== 特征定义 ==========
 
-# 日线 22 维特征（对齐模型 ts_feature_dim=22）
+# 日线 32 维特征（对齐模型 ts_feature_dim=32）
 FEATURE_COLS = [
-    # 基础量价 (6)
     '开盘价', '最高价', '最低价', '收盘价', '成交量（股）', '成交额（元）',
-    # 衍生收益率 (3)
     '涨幅%', '3日涨幅%', '10日涨幅%',
-    # 流动性与波动 (3)
     '换手率', '振幅%', '量比',
-    # 均线乖离率 (5) — 相对于收盘价的偏离%
     'dev_ma5', 'dev_ma10', 'dev_ma20', 'dev_ma30', 'dev_ma60',
-    # TA 技术指标 (5)
     'rsi_14', 'macd', 'macd_diff', 'bb_pband', 'atr_14_norm',
+    # 短线因子 (8个)
+    'gap_open', 'upper_shadow_pct', 'lower_shadow_pct', 'body_pct',
+    'limit_up_count_5d', 'vol_amt_ratio_20', 'price_position_20', 'return_entity',
+    # 大盘语境 (2个)
+    'csi300_ret', 'csi300_amt_ratio',
+    # 高级因子 (4个)
+    'hv_20', 'downside_vol_20', 'amihud_illiq', 'ret_skew_20',
 ]
 
-# 需要做 Z-Score 归一化的特征（指标类特征本身有界，不重复归一化）
 NORM_COLS = [
     '开盘价', '最高价', '最低价', '收盘价',
     '成交量（股）', '成交额（元）',
-    '换手率', '振幅%',
-    'atr_14_norm',
+    '换手率', '振幅%', 'atr_14_norm',
+    'gap_open', 'body_pct', 'return_entity',
+    'hv_20', 'downside_vol_20', 'amihud_illiq',
 ]
 
 
@@ -83,6 +92,66 @@ def add_daily_ta_features(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def add_short_term_features(df):
+    """新增短线因子：高开、影线、连板、放量等"""
+    eps = 1e-10
+    close = df['收盘价'].values
+    open_ = df['开盘价'].values
+    high = df['最高价'].values
+    low = df['最低价'].values
+    prev_close = df['前收盘价'].values if '前收盘价' in df.columns else close.copy()
+
+    df['gap_open'] = (open_ / (prev_close + eps) - 1) * 100
+    body_top = np.maximum(open_, close)
+    body_bot = np.minimum(open_, close)
+    candle_range = high - low + eps
+    df['upper_shadow_pct'] = (high - body_top) / candle_range
+    df['lower_shadow_pct'] = (body_bot - low) / candle_range
+    df['body_pct'] = np.abs(close - open_) / (prev_close + eps) * 100
+    df['return_entity'] = (close - open_) / (prev_close + eps) * 100
+
+    if '是否涨停' in df.columns:
+        limit_up_flag = (df['是否涨停'] == '是').astype(float).values
+    else:
+        limit_up_flag = np.zeros(len(df))
+    limit_cnt = np.full_like(limit_up_flag, np.nan)
+    for i in range(len(df)):
+        if i < 5:
+            limit_cnt[i] = limit_up_flag[:i+1].sum()
+        else:
+            weights = np.exp(np.arange(5) * 0.5)
+            limit_cnt[i] = np.average(limit_up_flag[i-4:i+1], weights=weights)
+    df['limit_up_count_5d'] = limit_cnt
+
+    if '成交额（元）' in df.columns:
+        amt = df['成交额（元）'].values
+        amt_ma20 = pd.Series(amt).rolling(20, min_periods=5).mean().to_numpy()
+        df['vol_amt_ratio_20'] = amt / (amt_ma20 + eps)
+    else:
+        df['vol_amt_ratio_20'] = 1.0
+
+    roll_max = pd.Series(high).rolling(20, min_periods=5).max().to_numpy()
+    roll_min = pd.Series(low).rolling(20, min_periods=5).min().to_numpy()
+    df['price_position_20'] = (close - roll_min) / (roll_max - roll_min + eps)
+
+    return df
+
+
+def add_advanced_features(df):
+    """高级因子：波动率、非流动性、偏度等量化研究公认因子"""
+    eps = 1e-10
+    ret = df['涨幅%'].values / 100.0
+    amt = df['成交额（元）'].values
+
+    df['hv_20'] = pd.Series(ret).rolling(20, min_periods=5).std().to_numpy() * np.sqrt(250)
+    neg_ret = ret.copy()
+    neg_ret[neg_ret > 0] = 0
+    df['downside_vol_20'] = pd.Series(neg_ret).rolling(20, min_periods=5).std().to_numpy() * np.sqrt(250)
+    df['amihud_illiq'] = np.abs(ret) / (amt / 1e8 + eps)
+    df['ret_skew_20'] = pd.Series(ret).rolling(20, min_periods=5).skew().to_numpy()
+    return df
+
+
 def _ema(x: np.ndarray, period: int) -> np.ndarray:
     """
     指数移动平均 — 使用 pandas 实现（稳健处理前导 NaN）。
@@ -99,6 +168,36 @@ def _sma(x: np.ndarray, period: int) -> np.ndarray:
 def _rolling_std(x: np.ndarray, period: int) -> np.ndarray:
     """滚动标准差（总体标准差 ddof=0）"""
     return pd.Series(x).rolling(window=period, min_periods=1).std(ddof=0).to_numpy()
+
+
+# ─── 大盘指数数据缓存 ───
+_CSI300_CACHE = None
+
+def _load_csi300(cache_dir=None):
+    """加载或下载沪深300日线，返回 DataFrame 或 None"""
+    global _CSI300_CACHE
+    if _CSI300_CACHE is not None:
+        return _CSI300_CACHE
+    cache_path = os.path.join(cache_dir or "/tmp", "csi300.pkl")
+    if os.path.exists(cache_path):
+        _CSI300_CACHE = pd.read_pickle(cache_path)
+        return _CSI300_CACHE
+    if ak is None:
+        return None
+    try:
+        df = ak.stock_zh_index_daily(symbol="sh000300")
+        df = df.rename(columns={'date': '日期', 'close': 'csi300_close', 'volume': 'csi300_vol'})
+        df['日期'] = pd.to_datetime(df['日期'])
+        df = df.sort_values('日期').reset_index(drop=True)
+        df['csi300_ret'] = df['csi300_close'].pct_change() * 100
+        df['csi300_amt_ratio'] = df['csi300_vol'] / df['csi300_vol'].rolling(20).mean()
+        _CSI300_CACHE = df[['日期', 'csi300_ret', 'csi300_amt_ratio']].dropna()
+        os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+        _CSI300_CACHE.to_pickle(cache_path)
+    except Exception as e:
+        print(f"[warn] 沪深300加载失败: {e}")
+        _CSI300_CACHE = pd.DataFrame()
+    return _CSI300_CACHE
 
 
 class OfflineStockDataset(Dataset):
@@ -120,18 +219,26 @@ class OfflineStockDataset(Dataset):
 
     def __init__(self, data_dir, seq_len=120, pred_len=5, is_train=True,
                  train_ratio=0.8, start_date=None, end_date=None,
-                 max_files=None):
+                 max_files=None, include_codes=None):
         self.data_dir = data_dir
         self.seq_len = seq_len
         self.pred_len = pred_len
         self.is_train = is_train
         self.train_ratio = train_ratio
         self.max_files = max_files
+        self.include_codes = include_codes
 
         self.start_date = pd.to_datetime(start_date) if start_date else None
         self.end_date = pd.to_datetime(end_date) if end_date else None
 
         self.files = sorted(glob.glob(os.path.join(data_dir, "*.csv")))
+
+        # 板块筛选 (如 ('60','00') = 主板)
+        if self.include_codes:
+            basenames = [os.path.basename(f) for f in self.files]
+            self.files = [f for f, bn in zip(self.files, basenames)
+                          if any(bn.startswith(c) for c in self.include_codes)]
+            print(f"[筛选] 保留代码前缀 {include_codes} → {len(self.files)} 个文件")
         if not self.files:
             print(f"[警告] 在 {data_dir} 未找到 CSV 文件.")
 
@@ -195,6 +302,20 @@ class OfflineStockDataset(Dataset):
 
                 # TA 技术指标
                 df = add_daily_ta_features(df)
+                df = add_short_term_features(df)
+                df = add_advanced_features(df)
+
+                # 合并大盘指数因子
+                index_df = _load_csi300()
+                if index_df is not None and len(index_df) > 0:
+                    idx = index_df[['日期', 'csi300_ret', 'csi300_amt_ratio']].copy()
+                    idx['日期'] = pd.to_datetime(idx['日期'])
+                    df = df.merge(idx, on='日期', how='left')
+                    df['csi300_ret'] = df['csi300_ret'].ffill().fillna(0)
+                    df['csi300_amt_ratio'] = df['csi300_amt_ratio'].ffill().fillna(1.0)
+                else:
+                    df['csi300_ret'] = 0.0
+                    df['csi300_amt_ratio'] = 1.0
 
                 # 补齐缺失特征列
                 for col in FEATURE_COLS:
@@ -204,10 +325,28 @@ class OfflineStockDataset(Dataset):
                 # TA 指标计算后有前导 NaN（RSI/MACD 预热期），前向填充后补 0
                 df[FEATURE_COLS] = df[FEATURE_COLS].ffill().bfill().fillna(0)
 
-                # === 标签构建 (未来 pred_len 日收益率, 百分比%) ===
-                future_price = df['收盘价'].shift(-self.pred_len)
-                df['Target_Return'] = (future_price - df['收盘价']) / (df['收盘价'] + eps) * 100
-                df = df.dropna(subset=['Target_Return'])
+                # === 多目标标签 [1d_ret, 3d_ret, 5d_ret, 5d_max_ret, limit_flag] ===
+                close = df['收盘价'].values
+                N = len(close)
+                target_1d = np.full(N, np.nan)
+                target_3d = np.full(N, np.nan)
+                target_5d = np.full(N, np.nan)
+                target_5d_max = np.full(N, np.nan)
+                target_limit = np.zeros(N)
+                for i in range(N):
+                    if i + 1 < N:
+                        target_1d[i] = (close[i+1] - close[i]) / close[i] * 100
+                    if i + 3 < N:
+                        target_3d[i] = (close[i+3] - close[i]) / close[i] * 100
+                    if i + self.pred_len < N:
+                        target_5d[i] = (close[i+self.pred_len] - close[i]) / close[i] * 100
+                        target_5d_max[i] = (max(close[i:i+self.pred_len+1]) - close[i]) / close[i] * 100
+                if '是否涨停' in df.columns:
+                    for i in range(N):
+                        lookahead = df['是否涨停'].iloc[i+1:i+self.pred_len+1]
+                        if len(lookahead) > 0:
+                            target_limit[i] = float((lookahead == '是').any())
+                label_arr = np.column_stack([target_1d, target_3d, target_5d, target_5d_max, target_limit])
 
                 if len(df) < self.seq_len:
                     continue
@@ -216,9 +355,10 @@ class OfflineStockDataset(Dataset):
                 feat_raw = df[FEATURE_COLS].values.astype(np.float32)
 
                 # 去 nan/inf
-                valid_mask = ~(np.isnan(feat_raw).any(axis=1) | np.isinf(feat_raw).any(axis=1))
-                feat_raw = feat_raw[valid_mask]
-                targets = df['Target_Return'].values[valid_mask]
+                valid_rows = ~np.isnan(label_arr).any(axis=1)
+                valid = valid_rows & ~(np.isnan(feat_raw).any(axis=1) | np.isinf(feat_raw).any(axis=1))
+                feat_raw = feat_raw[valid]
+                targets = label_arr[valid]
 
                 if len(feat_raw) < self.seq_len:
                     continue
@@ -263,11 +403,11 @@ class OfflineStockDataset(Dataset):
                     limit_up,
                 ], dtype=np.float32)
 
-                # === 滑动窗口生成样本 ===
+                # === 滑动窗口生成样本 (目标5维: 1d, 3d, 5d, 5d_max, limit) ===
                 for i in range(len(feat_raw) - self.seq_len + 1):
                     x = feat_raw[i:i + self.seq_len]
                     y = targets[i + self.seq_len - 1]
-                    if np.isnan(x).any() or np.isinf(x).any() or np.isnan(y) or np.isinf(y):
+                    if np.isnan(x).any() or np.isinf(x).any() or np.isnan(y).any() or np.isinf(y).any():
                         continue
                     self.samples.append((x, meta_arr.copy(), y))
 
@@ -317,9 +457,9 @@ class OfflineStockDataset(Dataset):
     def __getitem__(self, idx):
         x, meta, y = self.samples[idx]
         return (
-            torch.from_numpy(x.astype(np.float32)),  # [seq_len, 22]
+            torch.from_numpy(x.astype(np.float32)),  # [seq_len, 32]
             torch.from_numpy(meta),                   # [7]
-            torch.tensor(y, dtype=torch.float32),     # scalar
+            torch.from_numpy(y.astype(np.float32)),   # [5]
         )
 
 
@@ -370,6 +510,7 @@ class OfflineStockDatasetFromFiles(Dataset):
 
     def _build(self, file_list):
         norm_indices = [i for i, c in enumerate(FEATURE_COLS) if c in NORM_COLS]
+        index_df = _load_csi300()
         for f in sorted(file_list):
             try:
                 try:
@@ -400,6 +541,19 @@ class OfflineStockDatasetFromFiles(Dataset):
                     df[ma_name] = (close - ma) / (ma + eps) * 100
 
                 df = add_daily_ta_features(df)
+                df = add_short_term_features(df)
+                df = add_advanced_features(df)
+
+                # 合并大盘指数因子
+                if index_df is not None and len(index_df) > 0:
+                    idx = index_df[['日期', 'csi300_ret', 'csi300_amt_ratio']].copy()
+                    idx['日期'] = pd.to_datetime(idx['日期'])
+                    df = df.merge(idx, on='日期', how='left')
+                    df['csi300_ret'] = df['csi300_ret'].ffill().fillna(0)
+                    df['csi300_amt_ratio'] = df['csi300_amt_ratio'].ffill().fillna(1.0)
+                else:
+                    df['csi300_ret'] = 0.0
+                    df['csi300_amt_ratio'] = 1.0
 
                 for col in FEATURE_COLS:
                     if col not in df.columns:
@@ -408,15 +562,36 @@ class OfflineStockDatasetFromFiles(Dataset):
                 # 填补 TA 预热期的前导 NaN
                 df[FEATURE_COLS] = df[FEATURE_COLS].ffill().bfill().fillna(0)
 
-                future_price = df['收盘价'].shift(-self.pred_len)
-                df['Target_Return'] = (future_price - df['收盘价']) / (df['收盘价'] + eps) * 100
-                df = df.dropna(subset=['Target_Return'])
+                # === 多目标标签 [1d_ret, 3d_ret, 5d_ret, 5d_max_ret, limit_flag] ===
+                close = df['收盘价'].values
+                N = len(close)
+                target_1d = np.full(N, np.nan)
+                target_3d = np.full(N, np.nan)
+                target_5d = np.full(N, np.nan)
+                target_5d_max = np.full(N, np.nan)
+                target_limit = np.zeros(N)
+                for i in range(N):
+                    if i + 1 < N:
+                        target_1d[i] = (close[i+1] - close[i]) / close[i] * 100
+                    if i + 3 < N:
+                        target_3d[i] = (close[i+3] - close[i]) / close[i] * 100
+                    if i + self.pred_len < N:
+                        target_5d[i] = (close[i+self.pred_len] - close[i]) / close[i] * 100
+                        target_5d_max[i] = (max(close[i:i+self.pred_len+1]) - close[i]) / close[i] * 100
+                if '是否涨停' in df.columns:
+                    for i in range(N):
+                        lookahead = df['是否涨停'].iloc[i+1:i+self.pred_len+1]
+                        if len(lookahead) > 0:
+                            target_limit[i] = float((lookahead == '是').any())
+                label_arr = np.column_stack([target_1d, target_3d, target_5d, target_5d_max, target_limit])
 
                 if len(df) < self.seq_len:
                     continue
 
                 feat_raw = df[FEATURE_COLS].values.astype(np.float32)
-                targets = df['Target_Return'].values
+                valid = ~(np.isnan(label_arr).any(axis=1) | np.isnan(feat_raw).any(axis=1) | np.isinf(feat_raw).any(axis=1))
+                feat_raw = feat_raw[valid]
+                targets = label_arr[valid]
 
                 # Meta
                 log_mcap = np.log1p(float(df['总市值（元）'].iloc[-1])) if '总市值（元）' in df.columns else 0.0
@@ -434,7 +609,7 @@ class OfflineStockDatasetFromFiles(Dataset):
                 for i in range(len(feat_raw) - self.seq_len + 1):
                     x = feat_raw[i:i + self.seq_len]
                     y = targets[i + self.seq_len - 1]
-                    if np.isnan(x).any() or np.isinf(x).any() or np.isnan(y) or np.isinf(y):
+                    if np.isnan(x).any() or np.isinf(x).any() or np.isnan(y).any() or np.isinf(y).any():
                         continue
                     x_norm = x.copy()
                     x_norm[:, norm_indices] = self.scaler.transform(x_norm[:, norm_indices])
@@ -449,4 +624,4 @@ class OfflineStockDatasetFromFiles(Dataset):
 
     def __getitem__(self, idx):
         x, meta, y = self.samples[idx]
-        return torch.from_numpy(x.astype(np.float32)), torch.from_numpy(meta), torch.tensor(y, dtype=torch.float32)
+        return torch.from_numpy(x.astype(np.float32)), torch.from_numpy(meta), torch.from_numpy(y.astype(np.float32))
