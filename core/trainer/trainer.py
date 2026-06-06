@@ -1,8 +1,12 @@
 import os
+import sys
+import logging
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
+
+logger = logging.getLogger("EchoMarsh.Trainer")
 
 class FocalLoss(nn.Module):
     """
@@ -111,9 +115,7 @@ class EchoMarshTrainer:
         self.best_epoch = 0
         patience_counter = 0
 
-        print(f"EchoMarsh ConvTransformer Training | Device: {self.device}")
-        print(f"Epochs: {self.epochs} | Patience: {self.patience}")
-        print("-" * 70)
+        logger.info(f"ConvTransformer Training | Device: {self.device} | Epochs: {self.epochs} | Patience: {self.patience}")
 
         for epoch in range(1, self.epochs + 1):
             train_loss, l_reg, l_cls = self._run_epoch(train_loader, train=True)
@@ -135,14 +137,14 @@ class EchoMarshTrainer:
                 val_str = f" | Val Loss: {val_loss:.6f}"
                 monitor_loss = val_loss
 
-            print(f"Epoch {epoch:03d} | Train: {train_loss:.6f} "
+            logger.info(f"Epoch {epoch:03d} | Train: {train_loss:.6f} "
                   f"(Reg={l_reg:.5f} Cls={l_cls:.5f}){val_str} | LR: {lr_now:.6f}")
 
             # 每 5 轮定期保存，崩了也不白练
             if epoch % 5 == 0:
                 ckpt_path = os.path.join(self.checkpoint_dir, f"echomarsh_epoch{epoch}.pth")
                 torch.save(self.model.state_dict(), ckpt_path)
-                print(f"  --> Checkpoint saved: epoch{epoch}")
+                logger.info(f"  --> Checkpoint saved: epoch{epoch}")
 
             if monitor_loss < self.best_val_loss:
                 self.best_val_loss = monitor_loss
@@ -150,13 +152,13 @@ class EchoMarshTrainer:
                 patience_counter = 0
                 ckpt_path = os.path.join(self.checkpoint_dir, "best_echomarsh_model.pth")
                 torch.save(self.model.state_dict(), ckpt_path)
-                print(f"  --> Best: {self.best_val_loss:.6f} @ Epoch {self.best_epoch}. Saved.")
+                logger.info(f"  --> Best: {self.best_val_loss:.6f} @ Epoch {self.best_epoch}. Saved.")
             else:
                 patience_counter += 1
 
             if patience_counter >= self.patience:
-                print(f"\nEarly Stop: No improvement for {self.patience} epochs.")
-                print(f"Best model: Epoch {self.best_epoch}, Loss={self.best_val_loss:.6f}")
+                logger.info(f"Early Stop: No improvement for {self.patience} epochs. "
+                  f"Best: Epoch {self.best_epoch}, Loss={self.best_val_loss:.6f}")
                 break
 
-        print("\nTraining complete.")
+        logger.info("Training complete.")
